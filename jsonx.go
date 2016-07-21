@@ -16,6 +16,12 @@ const (
 	Footer    = `</json:object>`
 )
 
+// namedContainer wraps a gabs.Container to carry name information with it
+type namedContainer struct {
+	name string
+	*gabs.Container
+}
+
 // Marshal marshals the input data into JSONx.
 func Marshal(input interface{}) (string, error) {
 	jsonBytes, err := json.Marshal(input)
@@ -44,31 +50,11 @@ func EncodeJSONBytes(input []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	// We don't put the header or footer in, so run through this object
-	// manually
-	objectChildren, err := cont.ChildrenMap()
-	if err != nil {
+	if err := sortAndTransformObject(o, &namedContainer{Container: cont}); err != nil {
 		return nil, err
 	}
 
-	// Sorting is nice, and also lets us have unit tests
-	sortedNames := make([]string, 0, len(objectChildren))
-	for name, _ := range objectChildren {
-		sortedNames = append(sortedNames, name)
-	}
-	sort.Strings(sortedNames)
-	for _, name := range sortedNames {
-		if err := transformContainer(o, &namedContainer{name: name, Container: objectChildren[name]}); err != nil {
-			return nil, err
-		}
-	}
-
 	return o.Bytes(), nil
-}
-
-type namedContainer struct {
-	name string
-	*gabs.Container
 }
 
 func transformContainer(o *bytes.Buffer, cont *namedContainer) error {
@@ -83,18 +69,20 @@ func transformContainer(o *bytes.Buffer, cont *namedContainer) error {
 		printName = fmt.Sprintf(" name=\"%s\"", escapedNameBuf.String())
 	}
 
-	//o.WriteString(fmt.Sprintf("\n%s: %T %v\n", printName, cont.Data(), cont))
-
 	data := cont.Data()
 	switch data.(type) {
 	case nil:
 		o.WriteString(fmt.Sprintf("<json:null%s />", printName))
+
 	case bool:
 		o.WriteString(fmt.Sprintf("<json:boolean%s>%t</json:boolean>", printName, data))
+
 	case json.Number:
 		o.WriteString(fmt.Sprintf("<json:number%s>%v</json:number>", printName, data))
+
 	case string:
 		o.WriteString(fmt.Sprintf("<json:string%s>%v</json:string>", printName, data))
+
 	case []interface{}:
 		o.WriteString(fmt.Sprintf("<json:array%s>", printName))
 		arrayChildren, err := cont.Children()
@@ -107,25 +95,37 @@ func transformContainer(o *bytes.Buffer, cont *namedContainer) error {
 			}
 		}
 		o.WriteString("</json:array>")
+
 	case map[string]interface{}:
 		o.WriteString(fmt.Sprintf("<json:object%s>", printName))
-		objectChildren, err := cont.ChildrenMap()
-		if err != nil {
+
+		if err := sortAndTransformObject(o, cont); err != nil {
 			return err
 		}
 
-		sortedNames := make([]string, 0, len(objectChildren))
-		for name, _ := range objectChildren {
-			sortedNames = append(sortedNames, name)
-		}
-		sort.Strings(sortedNames)
-		for _, name := range sortedNames {
-			if err := transformContainer(o, &namedContainer{name: name, Container: objectChildren[name]}); err != nil {
-				return err
-			}
-		}
-
 		o.WriteString("</json:object>")
+	}
+
+	return nil
+}
+
+// sortAndTransformObject sorts object keys to make the output predictable so
+// the package can be tested; logic is here to prevent code duplication
+func sortAndTransformObject(o *bytes.Buffer, cont *namedContainer) error {
+	objectChildren, err := cont.ChildrenMap()
+	if err != nil {
+		return err
+	}
+
+	sortedNames := make([]string, 0, len(objectChildren))
+	for name, _ := range objectChildren {
+		sortedNames = append(sortedNames, name)
+	}
+	sort.Strings(sortedNames)
+	for _, name := range sortedNames {
+		if err := transformContainer(o, &namedContainer{name: name, Container: objectChildren[name]}); err != nil {
+			return err
+		}
 	}
 
 	return nil
